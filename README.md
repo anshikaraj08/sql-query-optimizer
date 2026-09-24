@@ -85,4 +85,4 @@ frontend/
 
 ## License
 
-No license has been specified yet
+No license has been specified yet.
