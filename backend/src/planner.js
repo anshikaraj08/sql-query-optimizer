@@ -1,0 +1,10 @@
+import { humanNumber } from './utils.js';
+
+function usableIndex(table, predicate) { return table.indexes.find(index => index.columns[0] === predicate.column); }
+export function buildPlan(bound, catalog) {
+  const scans = bound.ast.tables.map((table, index) => { const meta = catalog[table.name] || { rowCount: 100000, indexes: [] }; const predicates = bound.ast.predicates.filter(predicate => predicate.table === table.name); const predicate = predicates.find(item => item.sargable); const indexMeta = predicate && usableIndex(meta, predicate); const selectivity = predicate ? (predicate.operator === '=' ? .01 : .3) : 1; const rows = Math.max(1, Math.round(meta.rowCount * selectivity)); const cost = indexMeta ? Math.round(Math.log2(meta.rowCount) + rows * .12) : meta.rowCount; return { id: `scan-${index}`, op: 'Scan', table: table.name, access: indexMeta ? 'Index' : 'Seq', index: indexMeta?.name, filter: predicates.map(item => item.raw), rows, cost, label: `${indexMeta ? 'Index' : 'Seq'} Scan on ${table.name}` }; });
+  let root = scans[0] || { id: 'result', op: 'Result', rows: 0, cost: 0 };
+  for (let index = 1; index < scans.length; index += 1) { const right = scans[index]; const join = bound.ast.joins[index - 1]; const innerIndexed = join?.pair?.some(item => catalog[bound.aliases[item.alias]]?.indexes.some(idx => idx.columns[0] === item.column)); const algorithm = innerIndexed ? 'Nested Loop' : 'Hash Join'; root = { id: `join-${index}`, op: algorithm, left: root, right, rows: Math.max(1, Math.min(root.rows, right.rows)), cost: root.cost + right.cost + (algorithm === 'Hash Join' ? right.rows : root.rows * 3), condition: join?.condition }; }
+  if (bound.ast.predicates.length && scans.length > 1) root = { id: 'filter-root', op: 'Filter', input: root, rows: root.rows, cost: root.cost + Math.round(root.rows * .1), condition: bound.ast.predicates.map(item => item.raw).join(' AND ') };
+  return { ...root, summary: { cost: Math.round(root.cost), rows: root.rows, label: `${humanNumber(root.rows)} rows · cost ${humanNumber(root.cost)}` }, scans };
+}
